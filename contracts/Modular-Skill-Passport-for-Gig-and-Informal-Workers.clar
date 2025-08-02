@@ -9,6 +9,9 @@
 (define-constant ERR-NOT-AUTHORIZED (err u103))
 (define-constant ERR-ALREADY-VERIFIED (err u104))
 (define-constant ERR-INVALID-SKILL (err u105))
+(define-constant ERR-ALREADY-ENDORSED (err u106))
+(define-constant ERR-CANNOT-ENDORSE-OWN-SKILL (err u107))
+(define-constant ERR-ENDORSEMENT-LIMIT-REACHED (err u108))
 
 (define-data-var token-id-nonce uint u1)
 (define-data-var contract-uri (optional (string-utf8 256)) none)
@@ -28,6 +31,8 @@
 (define-map verifiers principal bool)
 (define-map worker-skills principal (list 50 uint))
 (define-map skill-categories (string-ascii 50) bool)
+(define-map skill-endorsements uint (list 20 principal))
+(define-map endorser-count principal uint)
 
 (define-read-only (get-last-token-id)
     (ok (- (var-get token-id-nonce) u1))
@@ -59,6 +64,22 @@
 
 (define-read-only (is-skill-category-valid (category (string-ascii 50)))
     (default-to false (map-get? skill-categories category))
+)
+
+(define-read-only (get-skill-endorsements (token-id uint))
+    (default-to (list) (map-get? skill-endorsements token-id))
+)
+
+(define-read-only (get-endorsement-count (token-id uint))
+    (len (get-skill-endorsements token-id))
+)
+
+(define-read-only (get-endorser-activity (endorser principal))
+    (default-to u0 (map-get? endorser-count endorser))
+)
+
+(define-read-only (has-endorsed-skill (endorser principal) (token-id uint))
+    (is-some (index-of (get-skill-endorsements token-id) endorser))
 )
 
 (define-public (transfer (token-id uint) (sender principal) (recipient principal))
@@ -162,6 +183,37 @@
         (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-OWNER-ONLY)
         (var-set contract-uri new-uri)
         (ok true)
+    )
+)
+
+(define-public (endorse-skill (token-id uint))
+    (let
+        (
+            (skill-owner (unwrap! (nft-get-owner? skill-passport token-id) ERR-TOKEN-NOT-FOUND))
+            (current-endorsements (get-skill-endorsements token-id))
+            (endorser-activity (get-endorser-activity tx-sender))
+        )
+        (asserts! (not (is-eq tx-sender skill-owner)) ERR-CANNOT-ENDORSE-OWN-SKILL)
+        (asserts! (not (has-endorsed-skill tx-sender token-id)) ERR-ALREADY-ENDORSED)
+        (asserts! (< (len current-endorsements) u20) ERR-ENDORSEMENT-LIMIT-REACHED)
+        (asserts! (> (len (get-worker-skills tx-sender)) u0) ERR-NOT-AUTHORIZED)
+        (map-set skill-endorsements token-id (unwrap-panic (as-max-len? (append current-endorsements tx-sender) u20)))
+        (map-set endorser-count tx-sender (+ endorser-activity u1))
+        (ok true)
+    )
+)
+
+(define-public (remove-endorsement (token-id uint))
+    (let
+        (
+            (endorser-activity (get-endorser-activity tx-sender))
+        )
+        (begin
+            (asserts! (has-endorsed-skill tx-sender token-id) ERR-TOKEN-NOT-FOUND)
+            (map-set skill-endorsements token-id (list))
+            (map-set endorser-count tx-sender (- endorser-activity u1))
+            (ok true)
+        )
     )
 )
 
