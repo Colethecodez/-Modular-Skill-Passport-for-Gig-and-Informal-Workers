@@ -13,6 +13,12 @@
 (define-constant ERR-CANNOT-ENDORSE-OWN-SKILL (err u107))
 (define-constant ERR-ENDORSEMENT-LIMIT-REACHED (err u108))
 
+(define-constant SKILL-BASE-SCORE u10)
+(define-constant VERIFICATION-MULTIPLIER u5)
+(define-constant ENDORSEMENT-SCORE u2)
+(define-constant ACTIVITY-BONUS u1)
+(define-constant DIVERSITY-BONUS u15)
+
 (define-data-var token-id-nonce uint u1)
 (define-data-var contract-uri (optional (string-utf8 256)) none)
 
@@ -33,6 +39,7 @@
 (define-map skill-categories (string-ascii 50) bool)
 (define-map skill-endorsements uint (list 20 principal))
 (define-map endorser-count principal uint)
+(define-map worker-reputation-cache principal uint)
 
 (define-read-only (get-last-token-id)
     (ok (- (var-get token-id-nonce) u1))
@@ -80,6 +87,88 @@
 
 (define-read-only (has-endorsed-skill (endorser principal) (token-id uint))
     (is-some (index-of (get-skill-endorsements token-id) endorser))
+)
+
+(define-read-only (calculate-skill-diversity-score (worker principal))
+    (let
+        (
+            (skill-tokens (get-worker-skills worker))
+            (categories (list))
+        )
+        (if (> (len skill-tokens) u0)
+            (begin
+                (fold calculate-unique-categories skill-tokens categories)
+                (* (len (fold calculate-unique-categories skill-tokens categories)) DIVERSITY-BONUS)
+            )
+            u0
+        )
+    )
+)
+
+(define-read-only (calculate-endorsement-score (worker principal))
+    (let
+        (
+            (skill-tokens (get-worker-skills worker))
+        )
+        (fold sum-endorsements skill-tokens u0)
+    )
+)
+
+(define-read-only (calculate-verification-score (worker principal))
+    (let
+        (
+            (skill-tokens (get-worker-skills worker))
+        )
+        (fold sum-verification-levels skill-tokens u0)
+    )
+)
+
+(define-read-only (calculate-worker-reputation-score (worker principal))
+    (let
+        (
+            (skill-count (len (get-worker-skills worker)))
+            (base-score (* skill-count SKILL-BASE-SCORE))
+            (verification-score (calculate-verification-score worker))
+            (endorsement-score (calculate-endorsement-score worker))
+            (activity-score (* (get-endorser-activity worker) ACTIVITY-BONUS))
+            (diversity-score (calculate-skill-diversity-score worker))
+        )
+        (+ base-score verification-score endorsement-score activity-score diversity-score)
+    )
+)
+
+(define-read-only (get-worker-reputation (worker principal))
+    (calculate-worker-reputation-score worker)
+)
+
+(define-read-only (get-cached-reputation (worker principal))
+    (default-to u0 (map-get? worker-reputation-cache worker))
+)
+
+(define-read-only (get-reputation-rank (worker principal))
+    (let
+        (
+            (worker-score (get-worker-reputation worker))
+        )
+        (if (> worker-score u0)
+            (begin
+                (if (>= worker-score u500)
+                    "master"
+                    (if (>= worker-score u300)
+                        "expert"
+                        (if (>= worker-score u150)
+                            "skilled"
+                            (if (>= worker-score u50)
+                                "developing"
+                                "beginner"
+                            )
+                        )
+                    )
+                )
+            )
+            "unranked"
+        )
+    )
 )
 
 (define-public (transfer (token-id uint) (sender principal) (recipient principal))
@@ -214,6 +303,44 @@
             (map-set endorser-count tx-sender (- endorser-activity u1))
             (ok true)
         )
+    )
+)
+
+(define-public (update-reputation-cache (worker principal))
+    (let
+        (
+            (current-score (calculate-worker-reputation-score worker))
+        )
+        (begin
+            (map-set worker-reputation-cache worker current-score)
+            (ok current-score)
+        )
+    )
+)
+
+(define-private (sum-endorsements (token-id uint) (acc uint))
+    (+ acc (* (get-endorsement-count token-id) ENDORSEMENT-SCORE))
+)
+
+(define-private (sum-verification-levels (token-id uint) (acc uint))
+    (match (map-get? skills token-id)
+        skill-data (+ acc (* (get verification-level skill-data) VERIFICATION-MULTIPLIER))
+        acc
+    )
+)
+
+(define-private (calculate-unique-categories (token-id uint) (categories (list 15 (string-ascii 50))))
+    (match (map-get? skills token-id)
+        skill-data (let
+            (
+                (category (get skill-category skill-data))
+            )
+            (if (is-none (index-of categories category))
+                (unwrap-panic (as-max-len? (append categories category) u15))
+                categories
+            )
+        )
+        categories
     )
 )
 
