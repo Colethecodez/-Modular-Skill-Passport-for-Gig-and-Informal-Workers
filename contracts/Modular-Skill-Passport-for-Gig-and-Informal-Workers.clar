@@ -12,6 +12,7 @@
 (define-constant ERR-ALREADY-ENDORSED (err u106))
 (define-constant ERR-CANNOT-ENDORSE-OWN-SKILL (err u107))
 (define-constant ERR-ENDORSEMENT-LIMIT-REACHED (err u108))
+(define-constant ERR-SKILL-NOT-EXPIRED (err u109))
 
 (define-constant SKILL-BASE-SCORE u10)
 (define-constant VERIFICATION-MULTIPLIER u5)
@@ -315,6 +316,22 @@
             (map-set worker-reputation-cache worker current-score)
             (ok current-score)
         )
+    )
+)
+
+(define-public (expire-skill (token-id uint))
+    (let
+        (
+            (skill-details (unwrap! (map-get? skills token-id) ERR-TOKEN-NOT-FOUND))
+            (token-owner (unwrap! (nft-get-owner? skill-passport token-id) ERR-TOKEN-NOT-FOUND))
+            (expires-at (get expires-at skill-details))
+        )
+        (asserts! (or (is-eq tx-sender token-owner) (is-eq tx-sender (get issuer skill-details))) ERR-NOT-AUTHORIZED)
+        (asserts! (is-some expires-at) ERR-INVALID-SKILL)
+        (asserts! (> stacks-block-height (unwrap-panic expires-at)) ERR-SKILL-NOT-EXPIRED)
+        (map-delete skills token-id)
+        (unwrap-panic (update-worker-skills token-owner token-id false))
+        (ok true)
     )
 )
 
